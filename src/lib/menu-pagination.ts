@@ -99,13 +99,14 @@ function makeContinuationName(name: string): string {
 function splitFlat(
   cat: MenuCategory,
   remaining: number,
+  force = false,
 ): { first: MenuCategory | null; rest: MenuCategory | null } {
   const cont = isContinuation(cat);
   const header = cont ? CONT_CARD_HEADER : CARD_HEADER;
   const padding = cont ? CONT_CARD_PADDING : CARD_PADDING;
   const bodyBudget = remaining - padding - header;
   const cols = columnsFor(cat.items.length);
-  if (bodyBudget < ROW_H * 2) return { first: null, rest: cat };
+  if (bodyBudget < ROW_H * 2 && !force) return { first: null, rest: cat };
   let used = 0;
   let canFit = 0;
   for (const it of cat.items) {
@@ -115,7 +116,13 @@ function splitFlat(
     canFit++;
   }
   if (canFit >= cat.items.length) return { first: cat, rest: null };
-  if (canFit < MIN_ITEMS_START) return { first: null, rest: cat };
+  if (canFit < MIN_ITEMS_START) {
+    // On a fresh page we must place SOMETHING, otherwise the loop would drop
+    // the card. Never delete content to fit — always continue on a new page.
+    if (!force) return { first: null, rest: cat };
+    canFit = Math.min(Math.max(1, MIN_ITEMS_START), cat.items.length);
+    if (canFit >= cat.items.length) return { first: cat, rest: null };
+  }
   return {
     first: { ...cat, items: cat.items.slice(0, canFit) },
     rest: {
@@ -130,6 +137,7 @@ function splitFlat(
 function splitWithSubgroups(
   cat: MenuCategory,
   remaining: number,
+  force = false,
 ): { first: MenuCategory | null; rest: MenuCategory | null } {
   const cont = isContinuation(cat);
   const header = cont ? CONT_CARD_HEADER : CARD_HEADER;
@@ -137,7 +145,9 @@ function splitWithSubgroups(
   const bodyBudget = remaining - padding - header;
   const total = totalItemCount(cat);
   const cols = columnsFor(total);
-  if (bodyBudget < SUBGROUP_HEADER + ROW_H * 2) return { first: null, rest: cat };
+  if (bodyBudget < SUBGROUP_HEADER + ROW_H * 2 && !force) {
+    return { first: null, rest: cat };
+  }
 
   const firstSubs: MenuSubgroup[] = [];
   const restSubs: MenuSubgroup[] = [];
@@ -175,7 +185,32 @@ function splitWithSubgroups(
   }
 
   const firstCount = firstSubs.reduce((n, sg) => n + sg.items.length, 0);
-  if (firstCount < MIN_ITEMS_START) return { first: null, rest: cat };
+  if (firstCount < MIN_ITEMS_START && !force) return { first: null, rest: cat };
+  if (firstCount === 0 && force) {
+    // Force-place the first subgroup's opening items so the card advances.
+    const sg = cat.subgroups![0];
+    const take = Math.min(MIN_ITEMS_START, sg.items.length);
+    const remainderFirst: MenuSubgroup[] = [
+      { heading: sg.heading, items: sg.items.slice(0, take) },
+    ];
+    const remainderRest: MenuSubgroup[] = [
+      ...(sg.items.length > take
+        ? [{ heading: sg.heading, items: sg.items.slice(take) }]
+        : []),
+      ...cat.subgroups!.slice(1),
+    ];
+    if (!remainderRest.length) return { first: cat, rest: null };
+    return {
+      first: { ...cat, subgroups: remainderFirst, items: [] },
+      rest: {
+        ...cat,
+        name: makeContinuationName(cat.name),
+        subgroups: remainderRest,
+        items: [],
+        selectionRules: [],
+      },
+    };
+  }
   if (!restSubs.length) return { first: cat, rest: null };
   return {
     first: { ...cat, subgroups: firstSubs, items: [] },
@@ -192,9 +227,12 @@ function splitWithSubgroups(
 function splitToFit(
   cat: MenuCategory,
   remaining: number,
+  force = false,
 ): { first: MenuCategory | null; rest: MenuCategory | null } {
   const hasSubs = !!(cat.subgroups && cat.subgroups.length);
-  return hasSubs ? splitWithSubgroups(cat, remaining) : splitFlat(cat, remaining);
+  return hasSubs
+    ? splitWithSubgroups(cat, remaining, force)
+    : splitFlat(cat, remaining, force);
 }
 
 export function paginateCategories(categories: MenuCategory[]): MenuCategory[][] {
@@ -215,7 +253,7 @@ export function paginateCategories(categories: MenuCategory[]): MenuCategory[][]
   };
 
   let guard = 0;
-  while (queue.length && guard++ < 500) {
+  while (queue.length && guard++ < 5000) {
     const cat = queue.shift()!;
     const margin = cur.length ? CARD_MARGIN : 0;
     const catH = estimateCardHeight(cat) + margin;
@@ -235,8 +273,9 @@ export function paginateCategories(categories: MenuCategory[]): MenuCategory[][]
     }
 
     // Empty page and the card is taller than a full page: splitting is the
-    // only way to avoid clipping.
-    const { first, rest } = splitToFit(cat, CONT_BUDGET);
+    // only way to avoid clipping. Forced so content always continues onto
+    // additional pages instead of being cut off.
+    const { first, rest } = splitToFit(cat, CONT_BUDGET, true);
     if (first) {
       cur.push(first);
       curH = estimateCardHeight(first);
