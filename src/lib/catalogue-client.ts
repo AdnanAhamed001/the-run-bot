@@ -187,10 +187,20 @@ export function parseCatalogueResponse(text: string): Catalogue {
       catSeen.set(k, { ...c, items: dedupeStrings(c.items) });
     } else {
       existing.items = dedupeStrings([...existing.items, ...c.items]);
-      existing.subgroups = [...(existing.subgroups ?? []), ...(c.subgroups ?? [])];
+      const subSeen = new Map<string, { heading: string; items: string[] }>();
+      for (const sg of [...(existing.subgroups ?? []), ...(c.subgroups ?? [])]) {
+        const key = norm(sg.heading);
+        const prev = subSeen.get(key);
+        if (prev) prev.items = dedupeStrings([...prev.items, ...sg.items]);
+        else subSeen.set(key, { heading: sg.heading, items: dedupeStrings(sg.items) });
+      }
+      existing.subgroups = Array.from(subSeen.values());
     }
   }
-  const categories = Array.from(catSeen.values());
+  // Never drop a category that carries dishes.
+  const categories = Array.from(catSeen.values()).filter(
+    (c) => c.items.length > 0 || (c.subgroups ?? []).some((sg) => sg.items.length > 0),
+  );
 
   const addOnsSeen = new Set<string>();
   const addOns = base.addOns.filter((a) => {

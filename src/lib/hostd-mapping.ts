@@ -2,6 +2,7 @@
 // Display names only — quantities, prices, items, notes remain untouched.
 
 import type { Catalogue, MenuCategory, Package } from "./catalogue-types";
+import { auditCoverage, reconcileCoverage } from "./menu-coverage";
 
 const HOSTD_TIERS_BY_COUNT: Record<number, string[]> = {
   1: ["Signature"],
@@ -627,9 +628,13 @@ export function applyHostdMapping(catalogue: Catalogue): Catalogue {
   const packages = syncPackageInclusions(remapped, merged);
 
   // Step 5: derive selection rules from package inclusions — package page is
-  // the single source of truth.
+  // the single source of truth. Categories WITHOUT a derivable rule are kept:
+  // dropping them would silently delete vendor dishes (rules 6, 14, 16, 20).
+  // Only genuinely empty categories are removed.
   const withDerivedRules = derivePackageSelectionRules(packages, merged).filter(
-    (category) => category.selectionRules.length > 0,
+    (category) =>
+      (category.items?.length ?? 0) > 0 ||
+      (category.subgroups ?? []).some((sg) => sg.items.length > 0),
   );
 
   // The package inclusions use the shared Hostd labels "Starters" and "Main
@@ -637,7 +642,27 @@ export function applyHostdMapping(catalogue: Catalogue): Catalogue {
   // quantity pills so both catalogue sections display those exact same names.
   const synchronizedCategories = combineVegNonVeg(withDerivedRules);
 
-  return { ...catalogue, packages, categories: synchronizedCategories };
+  // Step 6: mandatory coverage audit — every source dish must exist in the
+  // rendered dataset. Anything lost during mapping/merging is re-attached
+  // before rendering rather than silently dropped.
+  const covered = reconcileCoverage(
+    catalogue.categories,
+    synchronizedCategories,
+    mapCategoryName,
+  );
+
+  // Live Stations always closes the Build Your Menu journey (rule 18).
+  const finalCategories = [
+    ...covered.filter((c) => !/live station/i.test(c.name)),
+    ...covered.filter((c) => /live station/i.test(c.name)),
+  ];
+
+  const report = auditCoverage(catalogue.categories, finalCategories);
+  if (report.missing.length > 0) {
+    console.error("Hostd coverage audit failed — missing dishes:", report.missing);
+  }
+
+  return { ...catalogue, packages, categories: finalCategories };
 }
 
 
